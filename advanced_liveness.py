@@ -1,6 +1,5 @@
 import cv2
 import mediapipe as mp
-import numpy as np
 from scipy.spatial import distance
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -44,44 +43,43 @@ cap = cv2.VideoCapture(0)
 # =========================================================
 blink_count = 0
 blink_frames = 0
-blink_cooldown = 0
+blink_detected = False
 
 left_movement = False
 right_movement = False
 
 smile_detected = False
-eye_movement_detected = False
 
-challenge_completed = False
-
-previous_iris_x = None
 center_nose_x = None
 
 face_missing_frames = 0
 MAX_MISSING_FRAMES = 15
 
-spoof_warning = False
+challenge_completed = False
+challenge_stage = 0
 
 # =========================================================
 # LANDMARKS
 # =========================================================
+
+# Left Eye
 LEFT_EYE = [33, 160, 158, 133, 153, 144]
+
+# Right Eye
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 
-LEFT_IRIS = 468
+# Nose
+NOSE_TIP = 1
 
+# Mouth
 LEFT_MOUTH = 61
 RIGHT_MOUTH = 291
 TOP_MOUTH = 13
 BOTTOM_MOUTH = 14
 
-NOSE_TIP = 1
-
 # =========================================================
-# CHALLENGE SYSTEM
+# CHALLENGE TEXT
 # =========================================================
-challenge_stage = 0
-
 challenge_texts = [
     "BLINK 2 TIMES",
     "TURN HEAD LEFT",
@@ -97,37 +95,30 @@ def reset_system():
 
     global blink_count
     global blink_frames
-    global blink_cooldown
+    global blink_detected
 
     global left_movement
     global right_movement
 
     global smile_detected
-    global eye_movement_detected
+
+    global center_nose_x
 
     global challenge_completed
-    global previous_iris_x
-    global center_nose_x
-    global spoof_warning
     global challenge_stage
 
     blink_count = 0
     blink_frames = 0
-    blink_cooldown = 0
+    blink_detected = False
 
     left_movement = False
     right_movement = False
 
     smile_detected = False
-    eye_movement_detected = False
 
-    challenge_completed = False
-
-    previous_iris_x = None
     center_nose_x = None
 
-    spoof_warning = False
-
+    challenge_completed = False
     challenge_stage = 0
 
 # =========================================================
@@ -190,8 +181,10 @@ while True:
 
                 right_eye_points.append((x, y))
 
+                cv2.circle(frame, (x, y), 2, (0,255,0), -1)
+
             # =================================================
-            # EAR
+            # EAR CALCULATION
             # =================================================
             left_ear = calculate_EAR(left_eye_points)
             right_ear = calculate_EAR(right_eye_points)
@@ -201,24 +194,25 @@ while True:
             # =================================================
             # BETTER BLINK DETECTION
             # =================================================
-            if blink_cooldown > 0:
-                blink_cooldown -= 1
-
-            if ear < 0.18:
+            if ear < 0.23:
 
                 blink_frames += 1
 
             else:
 
-                if blink_frames >= 2 and blink_cooldown == 0:
+                if blink_frames >= 2 and not blink_detected:
 
                     blink_count += 1
-                    blink_cooldown = 10
+                    blink_detected = True
 
                 blink_frames = 0
 
+            # Reset blink state
+            if ear > 0.26:
+                blink_detected = False
+
             # =================================================
-            # NOSE MOVEMENT
+            # HEAD MOVEMENT
             # =================================================
             nose = face_landmarks[NOSE_TIP]
 
@@ -228,34 +222,15 @@ while True:
                 center_nose_x = nose_x
 
             # LEFT MOVEMENT
-            if nose_x < center_nose_x - 35:
+            if nose_x < center_nose_x - 30:
                 left_movement = True
 
             # RIGHT MOVEMENT
-            if nose_x > center_nose_x + 35:
+            if nose_x > center_nose_x + 30:
                 right_movement = True
 
             # =================================================
-            # IRIS MOVEMENT
-            # =================================================
-            iris = face_landmarks[LEFT_IRIS]
-
-            iris_x = int(iris.x * w)
-            iris_y = int(iris.y * h)
-
-            cv2.circle(frame, (iris_x, iris_y), 3, (255,0,0), -1)
-
-            if previous_iris_x is not None:
-
-                iris_motion = abs(iris_x - previous_iris_x)
-
-                if iris_motion > 3:
-                    eye_movement_detected = True
-
-            previous_iris_x = iris_x
-
-            # =================================================
-            # BETTER SMILE DETECTION
+            # SMILE DETECTION
             # =================================================
             left_mouth = face_landmarks[LEFT_MOUTH]
             right_mouth = face_landmarks[RIGHT_MOUTH]
@@ -274,27 +249,32 @@ while True:
 
             smile_ratio = mouth_width / (mouth_height + 1)
 
-            if smile_ratio > 3.8:
+            if smile_ratio > 3.5:
                 smile_detected = True
 
             # =================================================
             # CHALLENGE SYSTEM
             # =================================================
+
+            # Blink challenge
             if challenge_stage == 0:
 
                 if blink_count >= 2:
                     challenge_stage = 1
 
+            # Left movement
             elif challenge_stage == 1:
 
                 if left_movement:
                     challenge_stage = 2
 
+            # Right movement
             elif challenge_stage == 2:
 
                 if right_movement:
                     challenge_stage = 3
 
+            # Smile
             elif challenge_stage == 3:
 
                 if smile_detected:
@@ -302,17 +282,7 @@ while True:
                     challenge_completed = True
 
             # =================================================
-            # SPOOF DETECTION
-            # =================================================
-            if (
-                (left_movement or right_movement)
-                and blink_count == 0
-                and not smile_detected
-            ):
-                spoof_warning = True
-
-            # =================================================
-            # DISPLAY
+            # DISPLAY EAR
             # =================================================
             cv2.putText(frame,
                         f"EAR: {ear:.2f}",
@@ -322,6 +292,9 @@ while True:
                         (255,0,0),
                         2)
 
+            # =================================================
+            # DISPLAY BLINKS
+            # =================================================
             cv2.putText(frame,
                         f"Blinks: {blink_count}",
                         (20,80),
@@ -330,10 +303,13 @@ while True:
                         (0,255,0),
                         2)
 
+            # =================================================
+            # DISPLAY MOVEMENTS
+            # =================================================
             if left_movement:
 
                 cv2.putText(frame,
-                            "LEFT MOVEMENT",
+                            "LEFT MOVEMENT DETECTED",
                             (20,130),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.8,
@@ -343,13 +319,16 @@ while True:
             if right_movement:
 
                 cv2.putText(frame,
-                            "RIGHT MOVEMENT",
+                            "RIGHT MOVEMENT DETECTED",
                             (20,170),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.8,
                             (255,255,0),
                             2)
 
+            # =================================================
+            # DISPLAY SMILE
+            # =================================================
             if smile_detected:
 
                 cv2.putText(frame,
@@ -360,22 +339,12 @@ while True:
                             (255,0,255),
                             2)
 
-            if eye_movement_detected:
-
-                cv2.putText(frame,
-                            "EYE MOVEMENT DETECTED",
-                            (20,250),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.8,
-                            (0,255,255),
-                            2)
-
             # =================================================
-            # CURRENT CHALLENGE
+            # DISPLAY CURRENT CHALLENGE
             # =================================================
             cv2.putText(frame,
                         challenge_texts[challenge_stage],
-                        (20,320),
+                        (20,280),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1,
                         (0,165,255),
@@ -388,7 +357,7 @@ while True:
 
                 cv2.putText(frame,
                             "REAL HUMAN VERIFIED",
-                            (20,390),
+                            (20,350),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             1.1,
                             (0,255,0),
@@ -398,27 +367,14 @@ while True:
 
                 cv2.putText(frame,
                             "LIVENESS CHECK RUNNING",
-                            (20,390),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            1,
-                            (0,0,255),
-                            3)
-
-            # =================================================
-            # SPOOF ALERT
-            # =================================================
-            if spoof_warning and not challenge_completed:
-
-                cv2.putText(frame,
-                            "SUSPICIOUS ACTIVITY DETECTED",
-                            (20,450),
+                            (20,350),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             1,
                             (0,0,255),
                             3)
 
     # =====================================================
-    # NO FACE
+    # NO FACE DETECTED
     # =====================================================
     else:
 
@@ -439,7 +395,7 @@ while True:
     # =====================================================
     # SHOW WINDOW
     # =====================================================
-    cv2.imshow("Advanced AI Liveness Detection System", frame)
+    cv2.imshow("Advanced AI Liveness Detection", frame)
 
     # =====================================================
     # QUIT
